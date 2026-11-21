@@ -1,0 +1,66 @@
+name: Build AloTune for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Configure project
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3 and standalone
+        run: cmake --build build --config Release --parallel
+
+      - name: Collect build outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $PWD 'AloTune-Windows'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $vst = Get-ChildItem -Path 'build' -Directory -Recurse -Filter 'AloTune.vst3' | Select-Object -First 1
+          if (-not $vst) { throw 'AloTune.vst3 bundle was not produced.' }
+          Copy-Item -Recurse -Force $vst.FullName (Join-Path $stage 'AloTune.vst3')
+          $exe = Get-ChildItem -Path 'build' -File -Recurse -Filter 'AloTune.exe' | Where-Object { $_.FullName -match 'Standalone' } | Select-Object -First 1
+          if ($exe) {
+            Copy-Item -Force $exe.FullName $stage
+          } else {
+            Write-Host 'Standalone executable not found; VST3 will still be packaged.'
+          }
+          @'
+          INSTALLATION
+          1. Close Waveform 14.
+          2. Copy AloTune.vst3 into C:\Program Files\Common Files\VST3\
+          3. Start Waveform and rescan plugins if needed.
+          4. Put AloTune before Vital on an instrument track.
+
+          IMPORTANT
+          AloTune is a MIDI effect. The host must pass MIDI output from the effect to Vital.
+          Its standalone build is a MIDI utility shell and may require a virtual MIDI loopback
+          driver such as loopMIDI to route MIDI into a separate synth application.
+          This is an early, unverified build; test with a copy of a project first.
+          '@ | Set-Content -Encoding UTF8 (Join-Path $stage 'INSTALL.txt')
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath 'AloTune-Windows-Build.zip' -Force
+
+      - name: Upload ready-to-install package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AloTune-Windows-x64
+          path: AloTune-Windows-Build.zip
+          if-no-files-found: error
+          retention-days: 30
